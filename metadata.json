@@ -1,0 +1,5 @@
+{
+  "name": "AmazonGen - 亚马逊产品图生成套件",
+  "description": "专为亚马逊卖家设计的生成式 AI 工具，可根据预定义的产品面具和提示词创建产品图片集。",
+  "requestFramePermissions": []
+}
