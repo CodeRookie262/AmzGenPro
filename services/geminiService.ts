@@ -1,6 +1,7 @@
-
 import { GoogleGenAI } from "@google/genai";
-import { ModelType } from "../types";
+import { ModelType, UnifiedResponse, TextGenerationData, ImageGenerationData } from "../types";
+import { generateTextOpenRouter, generateImageOpenRouter, editImageOpenRouter, OR_MODELS } from "./openRouterService";
+import { getApiKeys } from "./storageService";
 
 // Helper to strip base64 prefix if present for API usage
 const stripBase64Header = (base64Str: string) => {
@@ -12,23 +13,92 @@ const getMimeType = (base64Str: string) => {
   return match ? `image/${match[1]}` : 'image/jpeg'; // Default to jpeg if not found
 }
 
+const isOpenRouterModel = (model: string) => {
+  return model.includes("/") || model.toLowerCase().includes("nanobanana");
+};
+
+// Helper to get Google API Key
+// IMPORTANT: Only return key if it looks like a Google Key (starts with AIza)
+// This prevents OpenRouter keys from accidentally being passed to Google SDK
+const getGoogleApiKey = () => {
+  const keys = getApiKeys();
+  let key = keys.google;
+  
+  if (!key) {
+    key = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+  }
+
+  // Basic validation: Google API Keys typically start with AIza
+  if (key && key.startsWith('AIza')) {
+    return key;
+  }
+  
+  return null; // Treat as no key if format is invalid
+};
+
 // 1. Optimize Prompt Step (Text/Multimodal Model)
 export const optimizePrompt = async (
   base64Image: string,
   instruction: string,
-  model: ModelType
-): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key is missing.");
+  model: ModelType | string
+): Promise<UnifiedResponse<TextGenerationData>> => {
+  
+  // --- OpenRouter Path ---
+  if (isOpenRouterModel(model as string)) {
+    const instructionPrompt = `你是一个专业的亚马逊电商图片提示词生成专家。
+请仔细观察输入的产品图片，并结合以下场景需求，创作一段全新的、极具画面感的英文图片生成提示词（Prompt）。
+
+场景需求：${instruction}
+
+要求：
+1. 创作策略：不要直接翻译或简单扩写场景需求。你要运用摄影师的思维，根据场景需求构思一个完整的画面。
+2. 主体融合：描述如何将产品自然地融入该场景（例如光影投射、环境反射、物理放置关系），但不需要详细重复产品的外观细节（因为我们会直接提供原图给生图模型）。
+3. 场景细节：丰富场景的质感、道具、背景元素、光照风格（如 "soft morning sunlight streaming through window"）和整体氛围。
+4. 负向提示：不需要包含。
+5. 输出格式：仅输出最终的英文 Prompt，不要包含 "Here is the prompt" 等废话。`;
+
+    try {
+      return await generateTextOpenRouter(model as string, instructionPrompt, base64Image);
+    } catch (error) {
+      console.error("OpenRouter Prompt optimization failed:", error);
+      // Fallback
+      return {
+        provider: "Fallback",
+        model: model as string,
+        data: {
+          content: `${instruction}, high quality product photography, 4k`
+        }
+      };
+    }
   }
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const cleanBase64 = stripBase64Header(base64Image);
-  const mimeType = getMimeType(base64Image);
+  // --- Direct Google SDK Path (with Auto-Fallback to OpenRouter) ---
+  const googleKey = getGoogleApiKey();
+  
+  // If no Google Key, check if we can use OpenRouter instead
+  if (!googleKey) {
+    // Map standard Google models to OpenRouter equivalents
+    let fallbackModel = null;
+    if (model === ModelType.GEMINI_FLASH) fallbackModel = OR_MODELS.GEMINI_2_5_FLASH; // For Prompt Optimization (Text)
+    if (model === ModelType.GEMINI_PRO) fallbackModel = OR_MODELS.GEMINI_2_5_PRO;
+    
+    if (fallbackModel) {
+       console.log(`Google API Key missing. Falling back to OpenRouter model: ${fallbackModel}`);
+       // Recursive call with the new OpenRouter model
+       return optimizePrompt(base64Image, instruction, fallbackModel);
+    }
+    
+    // If no mapping found, throw original error
+    throw new Error("Google API Key is missing. Please configure it in Admin Panel.");
+  }
 
   try {
+    const ai = new GoogleGenAI({ apiKey: googleKey });
+    const cleanBase64 = stripBase64Header(base64Image);
+    const mimeType = getMimeType(base64Image);
+
     const response = await ai.models.generateContent({
-      model: model, // Should be GEMINI_FLASH or GEMINI_PRO
+      model: model as string, // Should be GEMINI_FLASH or GEMINI_PRO
       contents: {
         parts: [
           {
@@ -53,11 +123,22 @@ export const optimizePrompt = async (
       },
     });
 
-    return response.text || "";
+    return {
+      provider: "Google",
+      model: model as string,
+      data: {
+        content: response.text || ""
+      }
+    };
   } catch (error) {
-    console.error("Prompt optimization failed:", error);
-    // Fallback: simply combine instruction + generic tag
-    return `${instruction}, high quality product photography, 4k`;
+    console.error("Google Prompt optimization failed:", error);
+    return {
+      provider: "Fallback",
+      model: model as string,
+      data: {
+        content: `${instruction}, high quality product photography, 4k`
+      }
+    };
   }
 };
 
@@ -65,21 +146,37 @@ export const optimizePrompt = async (
 export const generateImageFromProduct = async (
   base64Image: string,
   optimizedPrompt: string,
-  imageModel: ModelType
-): Promise<string> => {
+  imageModel: ModelType | string
+): Promise<UnifiedResponse<ImageGenerationData>> => {
   
-  if (!process.env.API_KEY) {
-    throw new Error("API Key is missing.");
+  // --- OpenRouter Path ---
+  if (isOpenRouterModel(imageModel as string)) {
+    try {
+      // Append instruction to preserve product integrity
+      const finalPrompt = `${optimizedPrompt}. (Strictly preserve the appearance of the product in the provided image. Seamlessly integrate it into the scene.)`;
+      
+      // Pass base64Image to allow Image-to-Image generation if supported
+      return await generateImageOpenRouter(imageModel as string, finalPrompt, 1024, 1024, base64Image);
+    } catch (error) {
+      console.error("OpenRouter Image Generation Error:", error);
+      throw error;
+    }
   }
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // --- Direct Google SDK Path ---
+  const apiKey = getGoogleApiKey();
+  if (!apiKey) {
+    throw new Error("Google API Key is missing. Please configure it in Admin Panel.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const cleanBase64 = stripBase64Header(base64Image);
   const mimeType = getMimeType(base64Image);
 
   try {
     const response = await ai.models.generateContent({
-      model: imageModel, // Should be GEMINI_FLASH_IMAGE or GEMINI_PRO_IMAGE
+      model: imageModel as string, // Should be GEMINI_FLASH_IMAGE or GEMINI_PRO_IMAGE
       contents: {
         parts: [
           {
@@ -95,11 +192,17 @@ export const generateImageFromProduct = async (
       },
       config: {
         // Image generation configs
-        // Note: responseMimeType is NOT supported for these models
       }
     });
 
-    return extractImageFromResponse(response);
+    return {
+      provider: "Google",
+      model: imageModel as string,
+      data: {
+        imageUrl: extractImageFromResponse(response),
+        prompt: optimizedPrompt
+      }
+    };
 
   } catch (error) {
     console.error("Gemini Image Generation Error:", error);
@@ -108,38 +211,57 @@ export const generateImageFromProduct = async (
 };
 
 export const removeBackground = async (base64Image: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key is missing.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const cleanBase64 = stripBase64Header(base64Image);
-  const mimeType = getMimeType(base64Image);
-
-  try {
-    // Use Flash Image for fast background removal
-    const response = await ai.models.generateContent({
-      model: ModelType.GEMINI_FLASH_IMAGE,
-      contents: {
-        parts: [
-          {
-            text: "Strictly copy the product from the image and place it on a pure solid white background (Hex #FFFFFF). Do not alter the product's angle, color, or shape. Output only the image.",
-          },
-          {
-            inlineData: {
-              data: cleanBase64,
-              mimeType: mimeType,
+  const googleKey = getGoogleApiKey();
+  
+  // 1. Try Google SDK (Best Quality for BG Removal)
+  if (googleKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: googleKey });
+      const cleanBase64 = stripBase64Header(base64Image);
+      const mimeType = getMimeType(base64Image);
+      
+      const response = await ai.models.generateContent({
+        model: ModelType.GEMINI_FLASH_IMAGE, 
+        contents: {
+          parts: [
+            {
+              text: "Strictly copy the product from the image and place it on a pure solid white background (Hex #FFFFFF). Do not alter the product's angle, color, or shape. Output only the image.",
             },
-          },
-        ],
-      },
-    });
+            {
+              inlineData: {
+                data: cleanBase64,
+                mimeType: mimeType,
+              },
+            },
+          ],
+        },
+      });
 
-    return extractImageFromResponse(response);
-  } catch (error) {
-    console.error("Background removal failed:", error);
-    throw error;
+      return extractImageFromResponse(response);
+    } catch (error: any) {
+      console.warn("Google SDK BG Removal failed, switching to OpenRouter attempt...", error.message);
+      // Fallthrough to OpenRouter attempt
+    }
   }
+
+  // 2. Attempt OpenRouter (Fallback or Primary if no Google Key)
+  try {
+    console.log("Attempting BG Removal via OpenRouter...");
+    // Using user specified model for BG removal fallback
+    const model = "google/gemini-2.5-flash-image"; // Updated per user request
+    const instruction = "Strictly copy the product from the image and place it on a pure solid white background (Hex #FFFFFF). Do not alter the product's angle, color, or shape. Output only the image.";
+    
+    // Use specialized image editing function
+    const imageUrl = await editImageOpenRouter(model, instruction, base64Image);
+    return imageUrl;
+    
+  } catch (orError) {
+    console.error("OpenRouter BG Removal failed:", orError);
+  }
+
+  // 3. Final Fallback: Return Original Image
+  console.warn("All BG removal methods failed. Using original image.");
+  return base64Image;
 };
 
 const extractImageFromResponse = (response: any): string => {

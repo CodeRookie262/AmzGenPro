@@ -2,6 +2,12 @@
 import { ProductMask, ModelType, ImageDefinition } from '../types';
 
 const STORAGE_KEY = 'amazongen_masks';
+const API_KEYS_STORAGE_KEY = 'amazongen_api_keys';
+
+export interface ApiKeys {
+  google: string;
+  openRouter: string;
+}
 
 const DEFAULT_MASKS: ProductMask[] = [
   {
@@ -23,6 +29,8 @@ const DEFAULT_MASKS: ProductMask[] = [
     ]
   }
 ];
+
+// --- Masks ---
 
 export const getMasks = (): ProductMask[] => {
   try {
@@ -64,4 +72,25 @@ export const createImageDefinition = (name: string, prompt: string): ImageDefini
     name,
     prompt
   };
+};
+
+// --- API Keys ---
+
+export const getApiKeys = (): ApiKeys => {
+  try {
+    const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
+    if (!stored) return { google: '', openRouter: '' };
+    return JSON.parse(stored);
+  } catch (e) {
+    console.error("Failed to load API keys", e);
+    return { google: '', openRouter: '' };
+  }
+};
+
+export const saveApiKeys = (keys: ApiKeys): void => {
+  try {
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(keys));
+  } catch (e) {
+    console.error("Failed to save API keys", e);
+  }
 };

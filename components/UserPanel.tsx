@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Zap, Loader2, Download, Image as ImageIcon, AlertCircle, Wand2, FileText } from 'lucide-react';
+import { Upload, Zap, Loader2, Download, Image as ImageIcon, AlertCircle, Wand2, FileText, CheckCircle } from 'lucide-react';
 import { ProductMask, GeneratedImageResult, ModelType } from '../types';
 import { getMasks } from '../services/storageService';
 import { generateImageFromProduct, removeBackground, optimizePrompt } from '../services/geminiService';
@@ -17,12 +17,19 @@ export const UserPanel: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<GeneratedImageResult[]>([]);
   
+  // Selection state for definitions
+  const [selectedDefIds, setSelectedDefIds] = useState<Set<string>>(new Set());
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loaded = getMasks();
     setMasks(loaded);
-    if (loaded.length > 0) setSelectedMaskId(loaded[0].id);
+    if (loaded.length > 0) {
+      setSelectedMaskId(loaded[0].id);
+      // Initialize with no selection (empty set) as requested
+      setSelectedDefIds(new Set());
+    }
   }, []);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -52,48 +59,59 @@ export const UserPanel: React.FC = () => {
     e.target.value = '';
   };
 
+  const toggleDefinitionSelection = (defId: string) => {
+    const newSelection = new Set(selectedDefIds);
+    if (newSelection.has(defId)) {
+      newSelection.delete(defId);
+    } else {
+      newSelection.add(defId);
+    }
+    setSelectedDefIds(newSelection);
+  };
+
   const handleGenerate = async () => {
     const mask = masks.find(m => m.id === selectedMaskId);
     if (!mask || !sourceImage) return;
 
-    // Check if key selection is needed for Pro Image model
-    if (selectedImageModel === ModelType.GEMINI_PRO_IMAGE) {
-      if (window.aistudio && !await window.aistudio.hasSelectedApiKey()) {
-        try {
-          await window.aistudio.openSelectKey();
-        } catch (e) {
-          console.error("Key selection failed/cancelled", e);
-          return;
-        }
-      }
+    // Filter definitions based on selection
+    const definitionsToRun = mask.definitions.filter(def => selectedDefIds.has(def.id));
+    
+    if (definitionsToRun.length === 0) {
+      alert("请至少选择一个要生成的镜头场景！");
+      return;
     }
 
     setIsGenerating(true);
     
-    const initialResults: GeneratedImageResult[] = mask.definitions.map(def => ({
-      definitionId: def.id,
-      definitionName: def.name,
-      imageUrl: null,
-      loading: true,
-      step: 'optimizing'
-    }));
+    // Initialize results only for selected definitions, preserving others if needed or just resetting list
+    // Strategy: Show ONLY the selected tasks in the results area for clarity
+    const initialResults: GeneratedImageResult[] = definitionsToRun.map(def => {
+      // Find existing result to preserve previous generation if available
+      const existing = results.find(r => r.definitionId === def.id);
+      return {
+        definitionId: def.id,
+        definitionName: def.name,
+        imageUrl: existing?.imageUrl || null, // Preserve previous image
+        loading: true,
+        step: 'optimizing'
+      };
+    });
     setResults(initialResults);
 
     // Execute generation pipeline for each definition
-    // We do this in parallel, but you might want to limit concurrency in production
-    const promises = mask.definitions.map(async (def) => {
+    const promises = definitionsToRun.map(async (def) => {
       try {
         // Step 1: Optimize Prompt (Text Model)
-        // Using the model configured in the MASK
-        const optimizedPrompt = await optimizePrompt(sourceImage, def.prompt, mask.promptModel);
+        const optimizedPromptRes = await optimizePrompt(sourceImage, def.prompt, mask.promptModel);
+        const optimizedPrompt = optimizedPromptRes.data.content;
         
         setResults(prev => prev.map(r => 
           r.definitionId === def.id ? { ...r, optimizedPrompt, step: 'generating' } : r
         ));
 
         // Step 2: Generate Image (Image Model)
-        // Using the model selected by the USER
-        const imageUrl = await generateImageFromProduct(sourceImage, optimizedPrompt, selectedImageModel);
+        const imageRes = await generateImageFromProduct(sourceImage, optimizedPrompt, selectedImageModel);
+        const imageUrl = imageRes.data.imageUrl;
         
         setResults(prev => prev.map(r => 
           r.definitionId === def.id ? { ...r, imageUrl, loading: false, step: undefined } : r
@@ -113,6 +131,11 @@ export const UserPanel: React.FC = () => {
 
   const selectedMask = masks.find(m => m.id === selectedMaskId);
 
+  // Effect to reset selection when mask changes
+  useEffect(() => {
+    setSelectedDefIds(new Set());
+  }, [selectedMaskId]);
+
   return (
     <div className="flex h-screen bg-white overflow-hidden">
       
@@ -126,17 +149,14 @@ export const UserPanel: React.FC = () => {
             <p className="text-gray-500 text-sm">自动化产品摄影生成套件</p>
           </div>
 
-          {/* 1. Mask Selection */}
+          {/* 1. Mask Selection & Definition Toggle */}
           <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
             <label className="block text-sm font-semibold text-gray-700 mb-2">1. 选择产品面具 (Product Mask)</label>
             <div className="relative mb-3">
               <select 
                 className="w-full appearance-none bg-gray-50 border border-gray-300 text-gray-700 py-3 px-4 pr-8 rounded-lg leading-tight focus:outline-none focus:bg-white focus:border-orange-500"
                 value={selectedMaskId}
-                onChange={(e) => {
-                  setSelectedMaskId(e.target.value);
-                  setResults([]);
-                }}
+                onChange={(e) => setSelectedMaskId(e.target.value)}
               >
                 {masks.map(m => (
                   <option key={m.id} value={m.id}>{m.name}</option>
@@ -144,15 +164,41 @@ export const UserPanel: React.FC = () => {
               </select>
             </div>
             {selectedMask && (
-              <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded border border-blue-100 flex flex-col gap-1">
-                <div className="flex justify-between items-center">
-                   <span className="font-semibold text-blue-700">优化模型:</span>
-                   <span className="text-blue-900">{selectedMask.promptModel}</span>
+              <div className="flex flex-col gap-2 mt-3">
+                <label className="text-xs font-semibold text-gray-500 uppercase">选择要生成的镜头:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {selectedMask.definitions.map(d => {
+                    const isSelected = selectedDefIds.has(d.id);
+                    return (
+                      <button
+                        key={d.id}
+                        onClick={() => toggleDefinitionSelection(d.id)}
+                        className={`px-3 py-2 text-xs rounded-md border flex items-center justify-between transition-all ${
+                          isSelected 
+                            ? 'bg-blue-50 border-blue-200 text-blue-700 shadow-sm' 
+                            : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                        }`}
+                      >
+                        <span className="truncate mr-2">{d.name}</span>
+                        {isSelected && <CheckCircle className="w-3 h-3 text-blue-500 flex-shrink-0" />}
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {selectedMask.definitions.map(d => (
-                    <span key={d.id} className="px-2 py-0.5 bg-white border border-blue-200 rounded-full">{d.name}</span>
-                  ))}
+                <div className="flex justify-between items-center mt-1">
+                   <span className="text-[10px] text-gray-400">已选 {selectedDefIds.size} 个场景</span>
+                   <button 
+                     onClick={() => {
+                        if (selectedDefIds.size === selectedMask.definitions.length) {
+                          setSelectedDefIds(new Set());
+                        } else {
+                          setSelectedDefIds(new Set(selectedMask.definitions.map(d => d.id)));
+                        }
+                     }}
+                     className="text-[10px] text-blue-600 hover:text-blue-800 underline"
+                   >
+                     {selectedDefIds.size === selectedMask.definitions.length ? '取消全选' : '全选'}
+                   </button>
                 </div>
               </div>
             )}
@@ -208,28 +254,29 @@ export const UserPanel: React.FC = () => {
                 value={selectedImageModel}
                 onChange={(e) => setSelectedImageModel(e.target.value as ModelType)}
               >
-                <option value={ModelType.GEMINI_FLASH_IMAGE}>Gemini 2.5 Flash Image (快速/稳定)</option>
-                <option value={ModelType.GEMINI_PRO_IMAGE}>Gemini 3 Pro Image (高清/需付费Key)</option>
+                <option value={ModelType.GEMINI_FLASH_IMAGE}>[Google] Gemini 2.5 Flash Image</option>
+                <option value={ModelType.OR_GEMINI_3_IMAGE}>[OpenRouter] Gemini 3.0 Pro Image Preview</option>
+                <option value={ModelType.OR_GEMINI_2_5_FLASH_IMAGE}>[OpenRouter] Gemini 2.5 Flash Image</option>
               </select>
           </div>
 
           {/* 4. Action */}
           <button
             onClick={handleGenerate}
-            disabled={!sourceImage || isGenerating || isProcessingBg || !selectedMask}
+            disabled={!sourceImage || isGenerating || isProcessingBg || !selectedMask || selectedDefIds.size === 0}
             className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-lg shadow-md transition-all
-              ${!sourceImage || isGenerating || isProcessingBg
+              ${!sourceImage || isGenerating || isProcessingBg || selectedDefIds.size === 0
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
                 : 'bg-gradient-to-r from-orange-500 to-orange-600 text-white hover:from-orange-600 hover:to-orange-700 hover:shadow-lg'
               }`}
           >
             {isGenerating ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin" /> 生成套图中...
+                <Loader2 className="w-5 h-5 animate-spin" /> 生成中 ({results.filter(r => !r.loading).length}/{results.length})...
               </>
             ) : (
               <>
-                <Zap className="w-5 h-5 fill-current" /> 开始生成
+                <Zap className="w-5 h-5 fill-current" /> 开始生成 ({selectedDefIds.size}张)
               </>
             )}
           </button>
@@ -257,7 +304,7 @@ export const UserPanel: React.FC = () => {
                  <ImageIcon className="w-10 h-10 text-gray-300" />
                </div>
                <p className="text-lg font-medium">准备就绪</p>
-               <p className="text-sm">左侧配置完成后，点击“开始生成”</p>
+               <p className="text-sm">请在左侧选择至少一个镜头并开始生成</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6">
@@ -303,13 +350,16 @@ export const UserPanel: React.FC = () => {
                             <Download className="w-4 h-4" /> 下载图片
                           </a>
                           
-                          {/* Prompt Peek */}
-                          <div className="group/prompt relative">
-                             <button className="bg-gray-900 text-white px-3 py-1.5 rounded-full text-xs opacity-80 hover:opacity-100 flex items-center gap-1">
+                          {/* Prompt Peek Overlay */}
+                          <div className="group/prompt static">
+                             <button className="bg-gray-900 text-white px-3 py-1.5 rounded-full text-xs opacity-80 hover:opacity-100 flex items-center gap-1 z-20 relative">
                                <FileText className="w-3 h-3" /> 查看 Prompt
                              </button>
-                             <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 p-3 bg-black text-white text-xs rounded shadow-xl hidden group-hover/prompt:block z-20 max-h-48 overflow-y-auto">
-                               {result.optimizedPrompt}
+                             {/* Full Overlay for Prompt */}
+                             <div className="absolute inset-0 bg-black bg-opacity-90 text-white p-6 flex flex-col justify-center items-center text-center opacity-0 group-hover/prompt:opacity-100 transition-opacity z-10 overflow-y-auto pointer-events-none group-hover/prompt:pointer-events-auto">
+                               <p className="text-xs font-mono leading-relaxed max-w-full break-words">
+                                 {result.optimizedPrompt}
+                               </p>
                              </div>
                           </div>
                         </div>

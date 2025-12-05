@@ -1,16 +1,110 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Save, Layout, Layers, Image as ImageIcon, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Save, Layout, Layers, Image as ImageIcon, Sparkles, Key, X, Eye, EyeOff } from 'lucide-react';
 import { ProductMask, ModelType, ImageDefinition } from '../types';
-import { getMasks, saveMasks, createMask, createImageDefinition } from '../services/storageService';
+import { getMasks, saveMasks, createMask, createImageDefinition, getApiKeys, saveApiKeys, ApiKeys } from '../services/storageService';
 
 interface AdminPanelProps {
   onBack: () => void;
 }
 
+// API Key Modal Component
+const ApiKeyModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [keys, setKeys] = useState<ApiKeys>({ google: '', openRouter: '' });
+  const [showGoogle, setShowGoogle] = useState(false);
+  const [showOpenRouter, setShowOpenRouter] = useState(false);
+
+  useEffect(() => {
+    setKeys(getApiKeys());
+  }, []);
+
+  const handleSave = () => {
+    saveApiKeys(keys);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative">
+        <button 
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+        >
+          <X className="w-5 h-5" />
+        </button>
+        
+        <h2 className="text-xl font-bold text-gray-800 mb-1 flex items-center gap-2">
+          <Key className="w-5 h-5 text-orange-500" /> API Key 管理
+        </h2>
+        <p className="text-sm text-gray-500 mb-6">配置各服务商的 API 密钥，将存储在本地浏览器中。</p>
+        
+        <div className="space-y-4">
+          {/* Google Key */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Google Gemini API Key</label>
+            <div className="relative">
+              <input 
+                type={showGoogle ? "text" : "password"}
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-orange-500 text-sm font-mono"
+                placeholder="AIzaSy..."
+                value={keys.google}
+                onChange={(e) => setKeys({...keys, google: e.target.value})}
+              />
+              <button 
+                onClick={() => setShowGoogle(!showGoogle)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                {showGoogle ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">用于 Gemini Flash/Pro 原生模型调用及背景移除。</p>
+          </div>
+
+          {/* OpenRouter Key */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">OpenRouter API Key</label>
+            <div className="relative">
+              <input 
+                type={showOpenRouter ? "text" : "password"}
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-orange-500 text-sm font-mono"
+                placeholder="sk-or-v1-..."
+                value={keys.openRouter}
+                onChange={(e) => setKeys({...keys, openRouter: e.target.value})}
+              />
+              <button 
+                onClick={() => setShowOpenRouter(!showOpenRouter)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                {showOpenRouter ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">用于 OpenRouter 模型 (如 Gemini 3 Pro Preview, NaNobanana)。</p>
+          </div>
+        </div>
+
+        <div className="mt-8 flex justify-end gap-3">
+          <button 
+            onClick={onClose}
+            className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-md text-sm"
+          >
+            取消
+          </button>
+          <button 
+            onClick={handleSave}
+            className="px-4 py-2 bg-gray-900 text-white rounded-md hover:bg-gray-800 text-sm font-medium"
+          >
+            保存配置
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onBack }) => {
   const [masks, setMasks] = useState<ProductMask[]>([]);
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
+  const [showKeyModal, setShowKeyModal] = useState(false);
   
   // New Mask Form State
   const [newMaskName, setNewMaskName] = useState('');
@@ -76,14 +170,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBack }) => {
   const selectedMask = masks.find(m => m.id === selectedMaskId);
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-gray-50 overflow-hidden relative">
+      {showKeyModal && <ApiKeyModal onClose={() => setShowKeyModal(false)} />}
+      
       {/* Sidebar: Mask List */}
       <div className="w-1/4 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-4 border-b border-gray-200 bg-gray-100">
-          <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-            <Layout className="w-5 h-5" /> 面具管理 (产品线)
-          </h2>
-          <p className="text-xs text-gray-500 mt-1">配置不同产品的生成模版</p>
+        <div className="p-4 border-b border-gray-200 bg-gray-100 flex justify-between items-center">
+          <div>
+            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+              <Layout className="w-5 h-5" /> 面具管理
+            </h2>
+            <p className="text-xs text-gray-500 mt-1">配置产品生成模版</p>
+          </div>
+          <button 
+            onClick={() => setShowKeyModal(true)}
+            className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-md transition-colors"
+            title="配置 API Key"
+          >
+            <Key className="w-4 h-4" />
+          </button>
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -148,8 +253,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBack }) => {
                          saveMasks(updated);
                        }}
                      >
-                        <option value={ModelType.GEMINI_FLASH}>Gemini 2.5 Flash (快速/经济)</option>
-                        <option value={ModelType.GEMINI_PRO}>Gemini 3 Pro (高智能)</option>
+                        <option value={ModelType.GEMINI_FLASH}>[Google] Gemini 2.5 Flash</option>
+                        <option value={ModelType.OR_GEMINI_2_5_PRO}>[OpenRouter] Gemini 2.5 Pro</option>
+                        <option value={ModelType.OR_GEMINI_3_PRO}>[OpenRouter] Gemini 3.0 Pro Preview</option>
                      </select>
                   </div>
                   <span className="text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded-full">
