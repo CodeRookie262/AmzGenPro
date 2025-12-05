@@ -44,6 +44,7 @@ export interface ProductMask {
 }
 
 export interface GeneratedImageResult {
+  id: string; // Unique ID for this specific generation result instance
   definitionId: string;
   definitionName: string;
   optimizedPrompt?: string; // Store the optimized prompt for display/debugging
@@ -51,6 +52,9 @@ export interface GeneratedImageResult {
   loading: boolean;
   step?: 'optimizing' | 'generating'; // Track current step
   error?: string;
+  timestamp: number; // To sort or track history
+  sourceImage?: string; // The specific source image used (base64)
+  model?: string;       // The model used
 }
 
 export interface GenerationSession {

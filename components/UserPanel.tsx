@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Zap, Loader2, Download, Image as ImageIcon, AlertCircle, Wand2, FileText, CheckCircle } from 'lucide-react';
+import { Upload, Zap, Loader2, Download, Image as ImageIcon, AlertCircle, Wand2, FileText, CheckCircle, Copy, CheckSquare, Square } from 'lucide-react';
 import { ProductMask, GeneratedImageResult, ModelType } from '../types';
 import { getMasks } from '../services/storageService';
 import { generateImageFromProduct, removeBackground, optimizePrompt } from '../services/geminiService';
@@ -20,6 +20,9 @@ export const UserPanel: React.FC = () => {
   // Selection state for definitions
   const [selectedDefIds, setSelectedDefIds] = useState<Set<string>>(new Set());
   
+  // Multi-select for download
+  const [selectedResultIds, setSelectedResultIds] = useState<Set<string>>(new Set());
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -27,7 +30,6 @@ export const UserPanel: React.FC = () => {
     setMasks(loaded);
     if (loaded.length > 0) {
       setSelectedMaskId(loaded[0].id);
-      // Initialize with no selection (empty set) as requested
       setSelectedDefIds(new Set());
     }
   }, []);
@@ -36,9 +38,8 @@ export const UserPanel: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Reset state
-    setSourceImage(null);
-    setResults([]);
+    // Only reset source image, NOT results history
+    setSourceImage(null); 
     setIsProcessingBg(true);
 
     const reader = new FileReader();
@@ -69,11 +70,35 @@ export const UserPanel: React.FC = () => {
     setSelectedDefIds(newSelection);
   };
 
+  const toggleResultSelection = (resultId: string) => {
+    const newSelection = new Set(selectedResultIds);
+    if (newSelection.has(resultId)) {
+      newSelection.delete(resultId);
+    } else {
+      newSelection.add(resultId);
+    }
+    setSelectedResultIds(newSelection);
+  };
+
+  const handleBatchDownload = () => {
+    const selectedResults = results.filter(r => selectedResultIds.has(r.id) && r.imageUrl);
+    selectedResults.forEach((result) => {
+      if (result.imageUrl) {
+        const link = document.createElement('a');
+        link.href = result.imageUrl;
+        link.download = `amazongen-${result.definitionName}-${result.id.slice(0,4)}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    });
+    setSelectedResultIds(new Set()); // Optional: clear selection after download
+  };
+
   const handleGenerate = async () => {
     const mask = masks.find(m => m.id === selectedMaskId);
     if (!mask || !sourceImage) return;
 
-    // Filter definitions based on selection
     const definitionsToRun = mask.definitions.filter(def => selectedDefIds.has(def.id));
     
     if (definitionsToRun.length === 0) {
@@ -83,44 +108,42 @@ export const UserPanel: React.FC = () => {
 
     setIsGenerating(true);
     
-    // Initialize results only for selected definitions, preserving others if needed or just resetting list
-    // Strategy: Show ONLY the selected tasks in the results area for clarity
-    const initialResults: GeneratedImageResult[] = definitionsToRun.map(def => {
-      // Find existing result to preserve previous generation if available
-      const existing = results.find(r => r.definitionId === def.id);
-      return {
-        definitionId: def.id,
-        definitionName: def.name,
-        imageUrl: existing?.imageUrl || null, // Preserve previous image
-        loading: true,
-        step: 'optimizing'
-      };
-    });
-    setResults(initialResults);
+    const newTasks: GeneratedImageResult[] = definitionsToRun.map(def => ({
+      id: crypto.randomUUID(), 
+      definitionId: def.id,
+      definitionName: def.name,
+      imageUrl: null, 
+      loading: true,
+      step: 'optimizing',
+      timestamp: Date.now(),
+      sourceImage: sourceImage, // Store current source
+      model: selectedImageModel // Store current model
+    }));
 
-    // Execute generation pipeline for each definition
-    const promises = definitionsToRun.map(async (def) => {
+    setResults(prev => [...newTasks, ...prev]);
+
+    const promises = newTasks.map(async (task) => {
+      const def = mask.definitions.find(d => d.id === task.definitionId)!;
+
       try {
-        // Step 1: Optimize Prompt (Text Model)
         const optimizedPromptRes = await optimizePrompt(sourceImage, def.prompt, mask.promptModel);
         const optimizedPrompt = optimizedPromptRes.data.content;
         
         setResults(prev => prev.map(r => 
-          r.definitionId === def.id ? { ...r, optimizedPrompt, step: 'generating' } : r
+          r.id === task.id ? { ...r, optimizedPrompt, step: 'generating' } : r
         ));
 
-        // Step 2: Generate Image (Image Model)
         const imageRes = await generateImageFromProduct(sourceImage, optimizedPrompt, selectedImageModel);
         const imageUrl = imageRes.data.imageUrl;
         
         setResults(prev => prev.map(r => 
-          r.definitionId === def.id ? { ...r, imageUrl, loading: false, step: undefined } : r
+          r.id === task.id ? { ...r, imageUrl, loading: false, step: undefined } : r
         ));
 
       } catch (error) {
         console.error(`Failed generation for ${def.name}`, error);
         setResults(prev => prev.map(r => 
-          r.definitionId === def.id ? { ...r, error: "生成失败: " + (error instanceof Error ? error.message : "未知错误"), loading: false } : r
+          r.id === task.id ? { ...r, error: "生成失败: " + (error instanceof Error ? error.message : "未知错误"), loading: false } : r
         ));
       }
     });
@@ -131,7 +154,6 @@ export const UserPanel: React.FC = () => {
 
   const selectedMask = masks.find(m => m.id === selectedMaskId);
 
-  // Effect to reset selection when mask changes
   useEffect(() => {
     setSelectedDefIds(new Set());
   }, [selectedMaskId]);
@@ -272,7 +294,7 @@ export const UserPanel: React.FC = () => {
           >
             {isGenerating ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin" /> 生成中 ({results.filter(r => !r.loading).length}/{results.length})...
+                <Loader2 className="w-5 h-5 animate-spin" /> 生成中 ({results.filter(r => r.loading).length}个任务)...
               </>
             ) : (
               <>
@@ -288,11 +310,14 @@ export const UserPanel: React.FC = () => {
         <div className="p-6 border-b border-gray-200 bg-white shadow-sm flex justify-between items-center z-10">
           <div>
             <h2 className="text-lg font-bold text-gray-800">生成结果</h2>
-            <p className="text-xs text-gray-500">{results.length > 0 ? `包含 ${results.length} 张场景图` : '等待生成...'}</p>
+            <p className="text-xs text-gray-500">{results.length > 0 ? `共 ${results.length} 张` : '等待生成...'}</p>
           </div>
-          {results.some(r => r.imageUrl) && (
-            <button className="text-sm text-orange-600 font-medium hover:text-orange-700 flex items-center gap-1">
-              <Download className="w-4 h-4" /> 全部下载
+          {selectedResultIds.size > 0 && (
+            <button 
+              onClick={handleBatchDownload}
+              className="text-sm bg-orange-100 text-orange-700 px-3 py-1.5 rounded-lg font-medium hover:bg-orange-200 flex items-center gap-1"
+            >
+              <Download className="w-4 h-4" /> 下载选中 ({selectedResultIds.size})
             </button>
           )}
         </div>
@@ -308,66 +333,95 @@ export const UserPanel: React.FC = () => {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-              {results.map((result) => (
-                <div key={result.definitionId} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-                  {/* Header */}
-                  <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
-                    <span className="font-semibold text-sm text-gray-700">{result.definitionName}</span>
-                    <span className="text-xs text-gray-400 font-mono">
-                      {result.loading ? (result.step === 'optimizing' ? '优化 Prompt...' : '正在绘图...') : '完成'}
-                    </span>
-                  </div>
-                  
-                  {/* Image Area */}
-                  <div className="aspect-square relative bg-gray-100 flex items-center justify-center group">
-                    {result.loading ? (
-                      <div className="flex flex-col items-center gap-2 p-4 text-center">
-                        <Loader2 className="w-8 h-8 animate-spin text-orange-400" />
-                        <span className="text-xs text-gray-500 font-medium">
-                          {result.step === 'optimizing' ? '正在编写光影与细节...' : '正在渲染最终图片...'}
-                        </span>
-                        {result.step === 'generating' && (
-                           <div className="text-[10px] text-gray-400 mt-2 max-h-20 overflow-hidden text-ellipsis px-4">
-                             Prompt 已就绪
-                           </div>
+              {results.map((result) => {
+                const isSelected = selectedResultIds.has(result.id);
+                return (
+                  <div 
+                    key={result.id} 
+                    className={`bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col relative transition-all ${isSelected ? 'border-orange-500 ring-1 ring-orange-500' : 'border-gray-200'}`}
+                  >
+                    {/* Card Header with Source Image & Model Info */}
+                    <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                        {/* Mini Source Image */}
+                        {result.sourceImage && (
+                          <div className="w-8 h-8 rounded border border-gray-200 bg-white p-0.5 flex-shrink-0" title="Source Image">
+                            <img src={result.sourceImage} className="w-full h-full object-contain" alt="source" />
+                          </div>
                         )}
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-sm text-gray-700 leading-tight">{result.definitionName}</span>
+                          <span className="text-[10px] text-gray-400 font-mono mt-0.5">
+                            {result.model?.split('/').pop() || 'Unknown'} • {new Date(result.timestamp || 0).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          </span>
+                        </div>
                       </div>
-                    ) : result.error ? (
-                      <div className="flex flex-col items-center gap-2 text-red-400 px-4 text-center">
-                        <AlertCircle className="w-8 h-8" />
-                        <span className="text-xs">{result.error}</span>
-                      </div>
-                    ) : result.imageUrl ? (
-                      <>
-                        <img src={result.imageUrl} alt={result.definitionName} className="w-full h-full object-contain" />
-                        {/* Overlay Actions */}
-                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 gap-2">
-                          <a 
-                            href={result.imageUrl} 
-                            download={`amazongen-${result.definitionName}.png`}
-                            className="bg-white text-gray-900 px-4 py-2 rounded-full font-medium text-sm shadow-lg hover:bg-orange-50 flex items-center gap-2 transform translate-y-2 group-hover:translate-y-0 transition-all"
-                          >
-                            <Download className="w-4 h-4" /> 下载图片
-                          </a>
+                      
+                      {/* Selection Checkbox */}
+                      <button 
+                        onClick={() => toggleResultSelection(result.id)}
+                        className={`p-1 rounded-md transition-colors ${isSelected ? 'text-orange-500' : 'text-gray-300 hover:text-gray-500'}`}
+                      >
+                        {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
+                      </button>
+                    </div>
+                    
+                    {/* Image Area */}
+                    <div className="aspect-square relative bg-gray-100 flex items-center justify-center group">
+                      
+                      {/* Image Display */}
+                      {result.imageUrl ? (
+                          <>
+                          <img src={result.imageUrl} alt={result.definitionName} className={`w-full h-full object-contain`} />
                           
-                          {/* Prompt Peek Overlay */}
-                          <div className="group/prompt static">
-                             <button className="bg-gray-900 text-white px-3 py-1.5 rounded-full text-xs opacity-80 hover:opacity-100 flex items-center gap-1 z-20 relative">
-                               <FileText className="w-3 h-3" /> 查看 Prompt
+                          {/* Tooltip Prompt - Anchored relative to button inside overlay */}
+                          <div className="absolute bottom-3 right-3 z-20 group/prompt">
+                             <button className="bg-gray-900/80 backdrop-blur text-white p-2 rounded-full hover:bg-black transition-colors shadow-lg">
+                               <FileText className="w-4 h-4" />
                              </button>
-                             {/* Full Overlay for Prompt */}
-                             <div className="absolute inset-0 bg-black bg-opacity-90 text-white p-6 flex flex-col justify-center items-center text-center opacity-0 group-hover/prompt:opacity-100 transition-opacity z-10 overflow-y-auto pointer-events-none group-hover/prompt:pointer-events-auto">
-                               <p className="text-xs font-mono leading-relaxed max-w-full break-words">
-                                 {result.optimizedPrompt}
-                               </p>
+                             
+                             {/* Tooltip Content - Floating bubble */}
+                             <div className="absolute bottom-full right-0 mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-xl opacity-0 group-hover/prompt:opacity-100 transition-opacity pointer-events-none group-hover/prompt:pointer-events-auto z-30 max-h-60 overflow-y-auto custom-scrollbar">
+                               <p className="font-mono leading-relaxed break-words">{result.optimizedPrompt}</p>
+                               <div className="absolute -bottom-1 right-3 w-2 h-2 bg-gray-900 rotate-45"></div>
                              </div>
                           </div>
+
+                          {/* Overlay Actions (Download) */}
+                          <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <a 
+                              href={result.imageUrl} 
+                              download={`amazongen-${result.definitionName}-${result.id.slice(0,4)}.png`}
+                              className="bg-white/90 backdrop-blur text-gray-700 p-2 rounded-full shadow-lg hover:text-orange-600 transition-colors flex"
+                              title="下载原图"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          </div>
+                          </>
+                      ) : null}
+
+                      {/* Loading Layer */}
+                      {result.loading && (
+                        <div className={`flex flex-col items-center gap-2 p-4 text-center z-10 ${result.imageUrl ? 'absolute inset-0 justify-center bg-black/10' : ''}`}>
+                          <Loader2 className="w-8 h-8 animate-spin text-orange-400" />
+                          <span className="text-xs font-medium text-gray-500">
+                            {result.step === 'optimizing' ? '正在编写光影...' : '正在渲染图片...'}
+                          </span>
                         </div>
-                      </>
-                    ) : null}
+                      )}
+
+                      {/* Error Layer */}
+                      {!result.loading && result.error && (
+                        <div className="flex flex-col items-center gap-2 text-red-400 px-4 text-center">
+                          <AlertCircle className="w-8 h-8" />
+                          <span className="text-xs">{result.error}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
