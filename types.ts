@@ -62,3 +62,24 @@ export interface GenerationSession {
   originalImage: string; // base64
   results: GeneratedImageResult[];
 }
+
+// --- User Management ---
+
+export enum UserRole {
+  ADMIN = 'admin',
+  USER = 'user'
+}
+
+export interface User {
+  id: string;
+  name: string;
+  role: UserRole;
+  password: string; // User password for login
+  avatar?: string; // Optional avatar URL or emoji
+  createdAt: number;
+}
+
+export interface UserList {
+  users: User[];
+  currentUserId: string | null;
+}
