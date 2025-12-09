@@ -2,7 +2,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Trash2, Save, Layout, Layers, Image as ImageIcon, Sparkles, Key, X, Eye, EyeOff, Edit2, Check, Users, UserPlus, Upload, Download, FileSpreadsheet } from 'lucide-react';
 import { ProductMask, ModelType, ImageDefinition, User, UserRole } from '../types';
-import { getPublicMasks, savePublicMasks, createMask, createImageDefinition, getApiKeys, saveApiKeys, ApiKeys, getUserList, addUser, deleteUser, createUser } from '../services/storageService';
+import { backendMasks, backendUsers, backendApiKeys } from '../services/backendService';
+import { clearApiKeysCache } from '../services/openRouterService';
+import { clearGoogleApiKeysCache } from '../services/geminiService';
+
+export interface ApiKeys {
+  google: string;
+  openRouter: string;
+}
 
 interface AdminPanelProps {
   currentUser: User;
@@ -33,13 +40,28 @@ const SettingsContent: React.FC<{ onSave?: () => void }> = ({ onSave }) => {
   const [showOpenRouter, setShowOpenRouter] = useState(false);
 
   useEffect(() => {
-    setKeys(getApiKeys());
+    const loadKeys = async () => {
+      try {
+        const keys = await backendApiKeys.getApiKeys();
+        setKeys(keys);
+      } catch (error) {
+        console.error('Failed to load API keys:', error);
+      }
+    };
+    loadKeys();
   }, []);
 
-  const handleSave = () => {
-    saveApiKeys(keys);
-    if (onSave) onSave();
-    alert('API Keys 已保存');
+  const handleSave = async () => {
+    try {
+      await backendApiKeys.updateApiKeys(keys);
+      // Clear cache so services will fetch fresh keys from backend
+      clearApiKeysCache();
+      clearGoogleApiKeysCache();
+      if (onSave) onSave();
+      alert('API Keys 已保存');
+    } catch (error: any) {
+      alert('保存失败: ' + (error.message || '未知错误'));
+    }
   };
 
   return (
@@ -47,7 +69,7 @@ const SettingsContent: React.FC<{ onSave?: () => void }> = ({ onSave }) => {
       <h2 className="text-xl font-bold text-gray-800 mb-1 flex items-center gap-2">
         <Key className="w-5 h-5 text-orange-500" /> API Key 管理
       </h2>
-      <p className="text-sm text-gray-500 mb-6">配置各服务商的 API 密钥，将存储在本地浏览器中。</p>
+      <p className="text-sm text-gray-500 mb-6">配置各服务商的 API 密钥，将存储在服务器数据库中。</p>
       
       <div className="space-y-4">
         {/* Google Key */}
@@ -125,12 +147,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onBack }) =
     document.body.removeChild(link);
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const text = e.target?.result as string;
       if (!text) return;
 
@@ -155,10 +177,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onBack }) =
             // Check if user already exists
             const exists = users.some(u => u.name === name);
             if (!exists) {
-              const newUser = createUser(name, password);
-              addUser(newUser);
-              newUsers.push(newUser);
-              successCount++;
+              try {
+                const newUser = await backendUsers.createUser(name, password, UserRole.USER);
+                newUsers.push(newUser);
+                successCount++;
+              } catch (error) {
+                // User might already exist, skip
+                console.error('Failed to create user:', name, error);
+              }
             }
           }
         }
@@ -197,78 +223,95 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onBack }) =
   const [newUserPassword, setNewUserPassword] = useState('');
 
   useEffect(() => {
-    setMasks(getPublicMasks());
-    const userList = getUserList();
-    setUsers(userList.users.filter(u => u.role === UserRole.USER)); // Only show regular users
+    const loadData = async () => {
+      try {
+        const [masksData, usersData] = await Promise.all([
+          backendMasks.getMasks(),
+          backendUsers.getUsers()
+        ]);
+        setMasks(masksData);
+        setUsers(usersData.filter(u => u.role === UserRole.USER));
+      } catch (error) {
+        console.error('Failed to load data:', error);
+      }
+    };
+    loadData();
   }, []);
 
-  const handleCreateMask = () => {
+  const handleCreateMask = async () => {
     if (!newMaskName.trim()) return;
-    const newMask = createMask(newMaskName, ModelType.GEMINI_FLASH);
-    const updatedMasks = [...masks, newMask];
-    setMasks(updatedMasks);
-    savePublicMasks(updatedMasks);
-    setNewMaskName('');
-    setSelectedMaskId(newMask.id);
+    try {
+      const newMask = await backendMasks.createMask(newMaskName, ModelType.GEMINI_FLASH, []);
+      setMasks([...masks, newMask]);
+      setNewMaskName('');
+      setSelectedMaskId(newMask.id);
+    } catch (error: any) {
+      alert('创建失败: ' + (error.message || '未知错误'));
+    }
   };
 
-  const handleDeleteMask = (id: string) => {
-    const updated = masks.filter(m => m.id !== id);
-    setMasks(updated);
-    savePublicMasks(updated);
-    if (selectedMaskId === id) setSelectedMaskId(null);
+  const handleDeleteMask = async (id: string) => {
+    if (!confirm('确定要删除这个面具吗？')) return;
+    try {
+      await backendMasks.deleteMask(id);
+      setMasks(masks.filter(m => m.id !== id));
+      if (selectedMaskId === id) setSelectedMaskId(null);
+    } catch (error: any) {
+      alert('删除失败: ' + (error.message || '未知错误'));
+    }
   };
 
-  const handleAddDefinition = () => {
+  const handleAddDefinition = async () => {
     if (!selectedMaskId || !newDefName.trim() || !newDefPrompt.trim()) return;
-    
-    const updatedMasks = masks.map(mask => {
-      if (mask.id === selectedMaskId) {
-        return {
-          ...mask,
-          definitions: [...mask.definitions, createImageDefinition(newDefName, newDefPrompt)]
-        };
-      }
-      return mask;
-    });
-
-    setMasks(updatedMasks);
-    savePublicMasks(updatedMasks);
-    setNewDefName('');
-    setNewDefPrompt('');
+    try {
+      await backendMasks.addDefinition(selectedMaskId, newDefName, newDefPrompt);
+      // Reload masks from backend to ensure we have the latest data
+      const updatedMasks = await backendMasks.getMasks();
+      setMasks(updatedMasks);
+      setNewDefName('');
+      setNewDefPrompt('');
+    } catch (error: any) {
+      alert('添加失败: ' + (error.message || '未知错误'));
+    }
   };
 
-  const handleDeleteDefinition = (maskId: string, defId: string) => {
-    const updatedMasks = masks.map(mask => {
-      if (mask.id === maskId) {
-        return {
-          ...mask,
-          definitions: mask.definitions.filter(d => d.id !== defId)
-        };
-      }
-      return mask;
-    });
+  const handleDeleteDefinition = async (maskId: string, defId: string) => {
+    if (!confirm('确定要删除这个镜头定义吗？')) return;
+    try {
+      await backendMasks.deleteDefinition(defId);
+      // Reload masks from backend to ensure we have the latest data
+      const updatedMasks = await backendMasks.getMasks();
     setMasks(updatedMasks);
-    savePublicMasks(updatedMasks);
     if (editingDefId === defId) setEditingDefId(null);
+    } catch (error: any) {
+      alert('删除失败: ' + (error.message || '未知错误'));
+    }
   };
   
-  const handleCreateUser = () => {
+  const handleCreateUser = async () => {
     if (!newUserName.trim() || !newUserPassword.trim()) {
       alert('请输入用户名和密码');
       return;
     }
-    const newUser = createUser(newUserName.trim(), newUserPassword.trim(), UserRole.USER);
-    addUser(newUser);
-    setUsers([...users, newUser]);
-    setNewUserName('');
-    setNewUserPassword('');
+    try {
+      const newUser = await backendUsers.createUser(newUserName.trim(), newUserPassword.trim(), UserRole.USER);
+      setUsers([...users, newUser]);
+      setNewUserName('');
+      setNewUserPassword('');
+    } catch (error: any) {
+      alert('创建失败: ' + (error.message || '未知错误'));
+    }
   };
   
-  const handleDeleteUser = (userId: string) => {
-    if (confirm(`确定要删除用户 "${users.find(u => u.id === userId)?.name}" 吗？此操作将删除该用户的所有数据。`)) {
-      deleteUser(userId);
-      setUsers(users.filter(u => u.id !== userId));
+  const handleDeleteUser = async (userId: string) => {
+    const userName = users.find(u => u.id === userId)?.name;
+    if (confirm(`确定要删除用户 "${userName}" 吗？此操作将删除该用户的所有数据。`)) {
+      try {
+        await backendUsers.deleteUser(userId);
+        setUsers(users.filter(u => u.id !== userId));
+      } catch (error: any) {
+        alert('删除失败: ' + (error.message || '未知错误'));
+      }
     }
   };
 
@@ -278,24 +321,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ currentUser, onBack }) =
     setEditDefPrompt(def.prompt);
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!selectedMaskId || !editingDefId || !editDefName.trim() || !editDefPrompt.trim()) return;
-    
-    const updatedMasks = masks.map(mask => {
-      if (mask.id === selectedMaskId) {
-        return {
-          ...mask,
-          definitions: mask.definitions.map(d => 
-            d.id === editingDefId ? { ...d, name: editDefName.trim(), prompt: editDefPrompt.trim() } : d
-          )
-        };
-      }
-      return mask;
-    });
-
-    setMasks(updatedMasks);
-    savePublicMasks(updatedMasks);
-    setEditingDefId(null);
+    try {
+      await backendMasks.updateDefinition(editingDefId, editDefName.trim(), editDefPrompt.trim());
+      
+      // Reload masks from backend to ensure we have the latest data
+      const updatedMasks = await backendMasks.getMasks();
+      setMasks(updatedMasks);
+      
+      setEditingDefId(null);
+      setEditDefName('');
+      setEditDefPrompt('');
+    } catch (error: any) {
+      alert('保存失败: ' + (error.message || '未知错误'));
+    }
   };
 
   const handleCancelEdit = () => {

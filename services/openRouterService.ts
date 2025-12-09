@@ -1,6 +1,6 @@
 import { OpenRouter } from "@openrouter/sdk";
 import { UnifiedResponse, TextGenerationData, ImageGenerationData } from '../types';
-import { getApiKeys } from "./storageService";
+import { backendApiKeys } from "./backendService";
 
 // OpenRouter specific model IDs
 export const OR_MODELS = {
@@ -11,11 +11,49 @@ export const OR_MODELS = {
   GEMINI_2_5_FLASH_IMAGE: "google/gemini-2.5-flash-image", // New dedicated Image model
 };
 
-const getApiKey = () => {
-  const keys = getApiKeys();
-  const apiKey = keys.openRouter || process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OpenRouter API Key is missing. Please configure it in Admin Panel.");
-  return apiKey;
+// Cache for API keys
+let apiKeysCache: { google: string; openRouter: string } | null = null;
+let apiKeysPromise: Promise<{ google: string; openRouter: string }> | null = null;
+
+const getApiKey = async () => {
+  // Return cached key if available
+  if (apiKeysCache?.openRouter) {
+    return apiKeysCache.openRouter;
+  }
+
+  // If a request is already in progress, wait for it
+  if (apiKeysPromise) {
+    const keys = await apiKeysPromise;
+    if (keys.openRouter) {
+      return keys.openRouter;
+    }
+  }
+
+  // Fetch from backend
+  try {
+    apiKeysPromise = backendApiKeys.getApiKeys();
+    const keys = await apiKeysPromise;
+    apiKeysCache = keys;
+    
+    const apiKey = keys.openRouter || process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error("OpenRouter API Key is missing. Please configure it in Admin Panel.");
+    }
+    return apiKey;
+  } catch (error) {
+    apiKeysPromise = null;
+    const fallbackKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
+    if (fallbackKey) {
+      return fallbackKey;
+    }
+    throw new Error("OpenRouter API Key is missing. Please configure it in Admin Panel.");
+  }
+};
+
+// Function to clear cache (call this after updating API keys)
+export const clearApiKeysCache = () => {
+  apiKeysCache = null;
+  apiKeysPromise = null;
 };
 
 /**
@@ -26,7 +64,7 @@ export const generateTextOpenRouter = async (
   prompt: string,
   imageBase64?: string
 ): Promise<UnifiedResponse<TextGenerationData>> => {
-  const apiKey = getApiKey();
+  const apiKey = await getApiKey();
 
   // Construct content payload
   let content: any = prompt;
@@ -101,7 +139,7 @@ export const editImageOpenRouter = async (
   prompt: string,
   imageBase64: string
 ): Promise<string> => {
-  const apiKey = getApiKey();
+  const apiKey = await getApiKey();
 
   const url = imageBase64.startsWith('data:') 
     ? imageBase64 
@@ -187,7 +225,7 @@ export const generateImageOpenRouter = async (
   height: number = 1024,
   imageBase64?: string
 ): Promise<UnifiedResponse<ImageGenerationData>> => {
-  const apiKey = getApiKey();
+  const apiKey = await getApiKey();
 
   try {
     // Check if we are using a model that supports the new "modalities" param (like Gemini 3 Image)

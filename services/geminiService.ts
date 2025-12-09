@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { ModelType, UnifiedResponse, TextGenerationData, ImageGenerationData } from "../types";
-import { generateTextOpenRouter, generateImageOpenRouter, editImageOpenRouter, OR_MODELS } from "./openRouterService";
-import { getApiKeys } from "./storageService";
+import { generateTextOpenRouter, generateImageOpenRouter, editImageOpenRouter, OR_MODELS, clearApiKeysCache } from "./openRouterService";
+import { backendApiKeys } from "./backendService";
 
 // Helper to strip base64 prefix if present for API usage
 const stripBase64Header = (base64Str: string) => {
@@ -17,23 +17,63 @@ const isOpenRouterModel = (model: string) => {
   return model.includes("/") || model.toLowerCase().includes("nanobanana");
 };
 
+// Cache for API keys
+let apiKeysCache: { google: string; openRouter: string } | null = null;
+let apiKeysPromise: Promise<{ google: string; openRouter: string }> | null = null;
+
 // Helper to get Google API Key
 // IMPORTANT: Only return key if it looks like a Google Key (starts with AIza)
 // This prevents OpenRouter keys from accidentally being passed to Google SDK
-const getGoogleApiKey = () => {
-  const keys = getApiKeys();
-  let key = keys.google;
-  
-  if (!key) {
-    key = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+const getGoogleApiKey = async () => {
+  // Return cached key if available
+  if (apiKeysCache?.google) {
+    const key = apiKeysCache.google;
+    if (key && key.startsWith('AIza')) {
+      return key;
+    }
   }
 
-  // Basic validation: Google API Keys typically start with AIza
-  if (key && key.startsWith('AIza')) {
-    return key;
+  // If a request is already in progress, wait for it
+  if (apiKeysPromise) {
+    const keys = await apiKeysPromise;
+    if (keys.google && keys.google.startsWith('AIza')) {
+      return keys.google;
+    }
   }
-  
-  return null; // Treat as no key if format is invalid
+
+  // Fetch from backend
+  try {
+    apiKeysPromise = backendApiKeys.getApiKeys();
+    const keys = await apiKeysPromise;
+    apiKeysCache = keys;
+    
+    let key = keys.google;
+    if (!key || !key.startsWith('AIza')) {
+      key = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+    }
+
+    // Basic validation: Google API Keys typically start with AIza
+    if (key && key.startsWith('AIza')) {
+      return key;
+    }
+    
+    return null; // Treat as no key if format is invalid
+  } catch (error) {
+    console.error('Failed to get Google API key:', error);
+    const fallbackKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY || '';
+    if (fallbackKey && fallbackKey.startsWith('AIza')) {
+      return fallbackKey;
+    }
+    return null;
+  } finally {
+    apiKeysPromise = null;
+  }
+};
+
+// Function to clear cache (call this after updating API keys)
+export const clearGoogleApiKeysCache = () => {
+  apiKeysCache = null;
+  apiKeysPromise = null;
 };
 
 // 1. Optimize Prompt Step (Text/Multimodal Model)
@@ -73,7 +113,7 @@ export const optimizePrompt = async (
   }
 
   // --- Direct Google SDK Path (with Auto-Fallback to OpenRouter) ---
-  const googleKey = getGoogleApiKey();
+  const googleKey = await getGoogleApiKey();
   
   // If no Google Key, check if we can use OpenRouter instead
   if (!googleKey) {
@@ -164,7 +204,7 @@ export const generateImageFromProduct = async (
   }
 
   // --- Direct Google SDK Path ---
-  const apiKey = getGoogleApiKey();
+  const apiKey = await getGoogleApiKey();
   if (!apiKey) {
     throw new Error("Google API Key is missing. Please configure it in Admin Panel.");
   }
@@ -211,7 +251,7 @@ export const generateImageFromProduct = async (
 };
 
 export const removeBackground = async (base64Image: string): Promise<string> => {
-  const googleKey = getGoogleApiKey();
+  const googleKey = await getGoogleApiKey();
   
   // 1. Try Google SDK (Best Quality for BG Removal)
   if (googleKey) {

@@ -3,7 +3,7 @@ import { UserPanel } from './components/UserPanel';
 import { AdminPanel } from './components/AdminPanel';
 import { LoginPanel } from './components/LoginPanel';
 import { User, UserRole } from './types';
-import { getCurrentUser, setCurrentUser } from './services/storageService';
+import { backendAuth } from './services/backendService';
 import { Settings, Image, LogOut } from 'lucide-react';
 
 enum View {
@@ -18,22 +18,29 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // Check if user is already logged in
-    const savedUser = getCurrentUser();
-    if (savedUser) {
-      setCurrentUserState(savedUser);
-      setCurrentView(savedUser.role === UserRole.ADMIN ? View.ADMIN : View.USER);
-    }
+    const checkAuth = async () => {
+      try {
+        const user = await backendAuth.getCurrentUser();
+        if (user) {
+          setCurrentUserState(user);
+          setCurrentView(user.role === UserRole.ADMIN ? View.ADMIN : View.USER);
+        }
+      } catch (error) {
+        // Not logged in, stay on login page
+        console.log('Not authenticated');
+      }
+    };
+    checkAuth();
   }, []);
 
   const handleLogin = (user: User) => {
     setCurrentUserState(user);
-    setCurrentUser(user.id);
     setCurrentView(user.role === UserRole.ADMIN ? View.ADMIN : View.USER);
   };
 
   const handleLogout = () => {
+    backendAuth.logout();
     setCurrentUserState(null);
-    setCurrentUser(null);
     setCurrentView(View.LOGIN);
   };
 

@@ -55,6 +55,8 @@ export interface GeneratedImageResult {
   timestamp: number; // To sort or track history
   sourceImage?: string; // The specific source image used (base64)
   model?: string;       // The model used
+  savedToBackend?: boolean; // Track if saved to backend
+  historyId?: string;   // Backend history ID
 }
 
 export interface GenerationSession {

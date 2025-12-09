@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { User } from '../types';
-import { authenticateUser, setCurrentUser } from '../services/storageService';
+import { backendAuth } from '../services/backendService';
 import { LogIn, AlertCircle, Eye, EyeOff } from 'lucide-react';
 
 interface LoginPanelProps {
@@ -15,7 +15,7 @@ export const LoginPanel: React.FC<LoginPanelProps> = ({ onLogin }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
@@ -26,19 +26,15 @@ export const LoginPanel: React.FC<LoginPanelProps> = ({ onLogin }) => {
 
     setIsLoading(true);
     
-    // Simulate async login (for better UX)
-    setTimeout(() => {
-      const user = authenticateUser(username.trim(), password);
-      
-      if (user) {
-        setCurrentUser(user.id);
-        onLogin(user);
-      } else {
-        setError('用户名或密码错误');
-        setPassword('');
-      }
+    try {
+      const response = await backendAuth.login(username.trim(), password);
+      onLogin(response.user);
+    } catch (err: any) {
+      setError(err.message || '用户名或密码错误');
+      setPassword('');
+    } finally {
       setIsLoading(false);
-    }, 300);
+    }
   };
 
   return (
