@@ -265,7 +265,7 @@ export const removeBackground = async (base64Image: string): Promise<string> => 
         contents: {
           parts: [
             {
-              text: "Strictly copy the product from the image and place it on a pure solid white background (Hex #FFFFFF). Do not alter the product's angle, color, or shape. Output only the image.",
+              text: "Remove the background completely and place ONLY the product on a pure solid white background (RGB 255,255,255 / Hex #FFFFFF). The background must be 100% white with absolutely NO shadows, NO gradients, NO transparency, NO gray tones, and NO other colors whatsoever. The product must have NO drop shadows, NO cast shadows, and NO shadow effects of any kind. Do not alter the product's angle, color, shape, or any details. Output only the image with pure white background.",
             },
             {
               inlineData: {
@@ -289,7 +289,7 @@ export const removeBackground = async (base64Image: string): Promise<string> => 
     console.log("Attempting BG Removal via OpenRouter...");
     // Using user specified model for BG removal fallback
     const model = "google/gemini-2.5-flash-image"; // Updated per user request
-    const instruction = "Strictly copy the product from the image and place it on a pure solid white background (Hex #FFFFFF). Do not alter the product's angle, color, or shape. Output only the image.";
+    const instruction = "Remove the background completely and place ONLY the product on a pure solid white background (RGB 255,255,255 / Hex #FFFFFF). The background must be 100% white with absolutely NO shadows, NO gradients, NO transparency, NO gray tones, and NO other colors whatsoever. The product must have NO drop shadows, NO cast shadows, and NO shadow effects of any kind. Do not alter the product's angle, color, shape, or any details. Output only the image with pure white background.";
     
     // Use specialized image editing function
     const imageUrl = await editImageOpenRouter(model, instruction, base64Image);

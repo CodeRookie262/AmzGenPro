@@ -1,110 +1,90 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * 主应用组件 - 使用React Router
+ */
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { UserPanel } from './components/UserPanel';
-import { AdminPanel } from './components/AdminPanel';
+import { AdminLayout } from './components/AdminLayout';
 import { LoginPanel } from './components/LoginPanel';
-import { User, UserRole } from './types';
-import { backendAuth } from './services/backendService';
-import { Settings, Image, LogOut } from 'lucide-react';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { NavigationBar } from './components/NavigationBar';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { MaskProvider } from './contexts/MaskContext';
+import { GenerationProvider } from './contexts/GenerationContext';
+import { UserRole } from './types';
 
-enum View {
-  LOGIN = 'LOGIN',
-  USER = 'USER',
-  ADMIN = 'ADMIN'
-}
+// 登录后重定向组件
+const LoginRedirect: React.FC = () => {
+  const { user, isLoading } = useAuth();
 
-const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<View>(View.LOGIN);
-  const [currentUser, setCurrentUserState] = useState<User | null>(null);
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
 
-  useEffect(() => {
-    // Check if user is already logged in
-    const checkAuth = async () => {
-      try {
-        const user = await backendAuth.getCurrentUser();
-        if (user) {
-          setCurrentUserState(user);
-          setCurrentView(user.role === UserRole.ADMIN ? View.ADMIN : View.USER);
-        }
-      } catch (error) {
-        // Not logged in, stay on login page
-        console.log('Not authenticated');
-      }
-    };
-    checkAuth();
-  }, []);
+  if (user) {
+    // 已登录，根据角色重定向
+    return <Navigate to={user.role === UserRole.ADMIN ? '/admin' : '/'} replace />;
+  }
 
-  const handleLogin = (user: User) => {
-    setCurrentUserState(user);
-    setCurrentView(user.role === UserRole.ADMIN ? View.ADMIN : View.USER);
-  };
+  return <LoginPanel />;
+};
 
-  const handleLogout = () => {
-    backendAuth.logout();
-    setCurrentUserState(null);
-    setCurrentView(View.LOGIN);
-  };
+// 主路由组件
+const AppRoutes: React.FC = () => {
+  const { user } = useAuth();
 
   return (
-    <div className="relative">
-      {currentView === View.LOGIN ? (
-        <LoginPanel onLogin={handleLogin} />
-      ) : (
-        <>
-          {/* Global Navigation Bar */}
-          <div className="fixed top-4 right-4 z-50 bg-white shadow-lg rounded-full p-1 border border-gray-200 flex gap-1 items-center">
-            {/* Current User Info */}
-            <div className="px-3 py-1 text-xs text-gray-600 flex items-center gap-2 mr-2 border-r border-gray-200">
-              <span className="text-lg">{currentUser?.avatar || '👤'}</span>
-              <span className="font-medium">{currentUser?.name}</span>
-            </div>
+    <>
+      {/* 全局导航栏（登录后显示） */}
+      {user && <NavigationBar />}
 
-            {/* View Switcher (only show for admin) */}
-            {currentUser?.role === UserRole.ADMIN && (
-              <>
-                <button
-                  onClick={() => setCurrentView(View.USER)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center gap-2 transition-all ${
-                    currentView === View.USER 
-                      ? 'bg-gray-900 text-white shadow-md' 
-                      : 'text-gray-500 hover:bg-gray-100'
-                  }`}
-                >
-                  <Image className="w-4 h-4" /> 生成器
-                </button>
-                <button
-                  onClick={() => setCurrentView(View.ADMIN)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium flex items-center gap-2 transition-all ${
-                    currentView === View.ADMIN 
-                      ? 'bg-orange-600 text-white shadow-md' 
-                      : 'text-gray-500 hover:bg-gray-100'
-                  }`}
-                >
-                  <Settings className="w-4 h-4" /> 后台管理
-                </button>
-              </>
-            )}
+      <Routes>
+        {/* 登录页 */}
+        <Route path="/login" element={<LoginRedirect />} />
 
-            {/* Logout Button */}
-            <button
-              onClick={handleLogout}
-              className="px-3 py-2 rounded-full text-sm font-medium text-gray-500 hover:bg-red-50 hover:text-red-600 transition-all ml-1"
-              title="退出登录"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
+        {/* 用户面板（生成器）- 需要登录 */}
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              {user && <UserPanel currentUser={user} />}
+            </ProtectedRoute>
+          }
+        />
 
-          {currentView === View.USER ? (
-            <UserPanel currentUser={currentUser!} />
-          ) : (
-            <AdminPanel 
-              currentUser={currentUser!}
-              onBack={() => setCurrentView(View.USER)} 
-            />
-          )}
-        </>
-      )}
-    </div>
+        {/* 管理面板 - 需要管理员权限 */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute requiredRole={UserRole.ADMIN}>
+              {user && <AdminLayout currentUser={user} />}
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 404 - 重定向到首页 */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
+  );
+};
+
+// 主应用组件（提供Context和Router）
+const App: React.FC = () => {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <MaskProvider>
+          <GenerationProvider>
+            <AppRoutes />
+          </GenerationProvider>
+        </MaskProvider>
+      </AuthProvider>
+    </BrowserRouter>
   );
 };
 
